@@ -1,0 +1,142 @@
+name: KernelSU / KernelSU-Next LKM CI (Mondrian)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  lkm-builder:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+
+    steps:
+      - name: Environment Initialization
+        run: |
+          dnf install -y \
+            gcc gcc-aarch64-linux-gnu clang lld \
+            bc flex bison make python3 \
+            openssl-devel wget curl tar zstd bsdtar \
+            file rsync zip unzip
+
+      - name: Clone Kernel
+        run: |
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_kernel_xiaomi_sm8450 kernel
+
+      - name: Setup ast-grep
+        run: |
+          cd kernel
+          curl -L https://github.com/ast-grep/ast-grep/releases/download/0.39.6/app-x86_64-unknown-linux-gnu.zip \
+            -o /tmp/astgrep.zip
+          unzip -j /tmp/astgrep.zip 'ast-grep'
+          chmod +x ast-grep
+          rm /tmp/astgrep.zip
+
+      - name: Build KSU LKM
+        run: |
+          cd kernel
+
+          # 1. Apply KSU integration
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+
+          # 2. Patch modpost to allow out-of-tree symbol resolution
+          ./ast-grep -U -p '$$$ check_exports($$$) {$$$}' -r '' scripts/mod/modpost.c
+          ./ast-grep -U -p 'check_exports($$$);'           -r '' scripts/mod/modpost.c
+
+          # 3. Change KSU Kconfig default from built-in to module
+          sed -i '/config KSU/,/help/{s/default y/default m/}' drivers/kernelsu/Kconfig
+
+          # 4. Generate base config with mondrian vendor fragment
+          make -j$(nproc) \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out gki_defconfig
+
+          ./scripts/kconfig/merge_config.sh -m -O out \
+            out/.config \
+            arch/arm64/configs/vendor/mondrian_GKI.config
+
+          # 5. Force CONFIG_KSU=m before olddefconfig so it never prompts
+          #    or silently defaults to built-in
+          echo "CONFIG_KSU=m" >> out/.config
+
+          make -j$(nproc) \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out olddefconfig
+
+          # 6. Prepare headers and module scaffolding with KSU now in config
+          make -j$(nproc) \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out prepare modules_prepare
+
+          # 7. Build the module
+          make -j$(nproc) \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out \
+            security/ \
+            drivers/kernelsu/kernelsu.ko
+
+          llvm-objcopy --strip-debug out/drivers/kernelsu/kernelsu.ko ./kernelsu.ko
+
+          # 8. Clean KSU integration and restore tree before KSUN build
+          rm -rf KernelSU/ drivers/kernelsu
+          git restore drivers/ scripts/
+
+      - name: Build KSUN LKM
+        run: |
+          cd kernel
+
+          # 1. Apply KSUN integration
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+
+          # 2. Patch modpost
+          ./ast-grep -U -p '$$$ check_exports($$$) {$$$}' -r '' scripts/mod/modpost.c
+          ./ast-grep -U -p 'check_exports($$$);'           -r '' scripts/mod/modpost.c
+
+          # 3. Change KSU Kconfig default to module
+          sed -i '/config KSU/,/help/{s/default y/default m/}' drivers/kernelsu/Kconfig
+
+          # 4. Fresh config into out2/ — keeps KSUN artifacts separate from KSU
+          make -j$(nproc) \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out2 gki_defconfig
+
+          ./scripts/kconfig/merge_config.sh -m -O out2 \
+            out2/.config \
+            arch/arm64/configs/vendor/mondrian_GKI.config
+
+          # 5. Force CONFIG_KSU=m
+          echo "CONFIG_KSU=m" >> out2/.config
+
+          make -j$(nproc) \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out2 olddefconfig
+
+          # 6. Prepare
+          make -j$(nproc) \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out2 prepare modules_prepare
+
+          # 7. Build
+          make -j$(nproc) \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- \
+            O=out2 \
+            security/ \
+            drivers/kernelsu/kernelsu.ko
+
+          llvm-objcopy --strip-debug out2/drivers/kernelsu/kernelsu.ko ./kernelsu_next.ko
+
+          echo "DATE=$(date -u '+%Y%d%m%I%M')" >> $GITHUB_ENV
+
+      - name: Verify Artifacts
+        run: |
+          file kernel/kernelsu.ko
+          file kernel/kernelsu_next.ko
+
+      - name: Upload to GitHub Releases
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "kernel/kernelsu.ko,kernel/kernelsu_next.ko"
+          name: "KernelSU / KernelSU-Next LKM for Poco F5 Pro (Mondrian)"
+          tag: "ksu_lkm-${{ env.DATE }}"
+          repo: "nyxiereal/ksu-mondrian-builder"
+          token: ${{ secrets.GITHUB_TOKEN }}
