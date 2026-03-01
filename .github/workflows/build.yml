@@ -6,17 +6,15 @@ on:
 jobs:
   lkm-builder:
     runs-on: ubuntu-latest
-    container:
-      image: fedora:latest
 
     steps:
       - name: Environment Initialization
         run: |
-          dnf install -y \
-            gcc gcc-aarch64-linux-gnu clang lld \
-            bc flex bison make python3 \
-            openssl-devel wget curl tar zstd bsdtar \
-            file rsync zip unzip
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu clang lld llvm \
+            bc flex bison libssl-dev \
+            zip unzip
 
       - name: Clone Kernel
         run: |
