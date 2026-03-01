@@ -130,11 +130,13 @@ jobs:
           file kernel/kernelsu.ko
           file kernel/kernelsu_next.ko
 
-      - name: Upload to GitHub Releases
-        uses: ncipollo/release-action@v1
-        with:
-          artifacts: "kernel/kernelsu.ko,kernel/kernelsu_next.ko"
-          name: "KernelSU / KernelSU-Next LKM for Poco F5 Pro (Mondrian)"
-          tag: "ksu_lkm-${{ env.DATE }}"
-          repo: "nyxiereal/ksu-mondrian-builder"
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          gh release create "ksu_lkm-${{ env.DATE }}" \
+            --repo nyxiereal/ksu-mondrian-builder \
+            --title "KernelSU / KernelSU-Next LKM for Poco F5 Pro (Mondrian)" \
+            --notes "Automated LKM build for mondrian (android12-5.10)" \
+            kernel/kernelsu.ko \
+            kernel/kernelsu_next.ko
